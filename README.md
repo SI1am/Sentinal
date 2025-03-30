@@ -1,6 +1,6 @@
 # Facial Expression Recognition System
 
-A deep learning-based facial expression recognition system that can detect and classify human emotions in real-time using webcam input. The system is built using PyTorch and OpenCV, capable of recognizing 8 different emotions: angry, disgust, fear, happy, neutral, sad, surprise, and confused. The system now includes a web interface for easy interaction and camera control.
+A deep learning-based facial expression recognition system that can detect and classify human emotions in real-time using webcam input. The system is built using PyTorch and OpenCV, capable of recognizing 8 different emotions: angry, disgust, fear, happy, neutral, sad, surprise, and confused. The system includes a web interface for easy interaction and camera control.
 
 ## Features
 
@@ -12,6 +12,10 @@ A deep learning-based facial expression recognition system that can detect and c
 - Camera control (on/off functionality)
 - Emotion history tracking
 - Cross-platform compatibility
+- Advanced face alignment using eye detection
+- Temporal smoothing for stable predictions
+- Confidence threshold filtering
+- Robust face detection with multiple face handling
 
 ## System Requirements
 
@@ -52,6 +56,32 @@ facial-recognition/
 
 ## Technical Details
 
+### Latest Improvements
+
+1. **Face Alignment**
+   - Eye detection for precise face alignment
+   - Automatic rotation correction
+   - Improved face ROI extraction
+   - Better handling of tilted faces
+
+2. **Temporal Smoothing**
+   - 5-frame history for stable predictions
+   - Majority voting system
+   - Reduced prediction jitter
+   - Smoother emotion transitions
+
+3. **Confidence Filtering**
+   - 60% confidence threshold
+   - Uncertain state for low confidence predictions
+   - Top 3 emotion display
+   - Better handling of ambiguous cases
+
+4. **Robust Face Detection**
+   - Largest face selection
+   - Multiple face handling
+   - Improved face cascade parameters
+   - Better error handling
+
 ### Libraries and Their Purposes
 
 1. **PyTorch (torch)**
@@ -72,6 +102,7 @@ facial-recognition/
    - Used for:
      - Real-time video capture
      - Face detection using Haar Cascade Classifier
+     - Eye detection for face alignment
      - Image preprocessing and resizing
      - Color space conversions
    - Chosen because:
@@ -86,6 +117,7 @@ facial-recognition/
      - Array operations
      - Matrix manipulations
      - Data preprocessing
+     - Face alignment calculations
    - Chosen because:
      - Efficient array operations
      - Seamless integration with PyTorch
@@ -205,6 +237,7 @@ python emotion_detection.py
    - Open your webcam
    - Detect faces in real-time
    - Display the detected emotion and confidence score
+   - Show top 3 emotions with their confidence levels
    - Press 'q' to quit the application
 
 ### Training the Model
@@ -250,13 +283,8 @@ The system uses a custom CNN architecture (EmotionNet) with the following compon
 - NumPy
 - Matplotlib
 - scikit-learn
-- tqdm
 - Flask
-- Pillow
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+- PIL (Python Imaging Library)
 
 ## License
 

@@ -4,16 +4,74 @@ import torch.nn as nn
 import numpy as np
 from PIL import Image
 import torchvision.transforms as transforms
+from collections import deque
 
 # Define emotions
 EMOTIONS = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise', 'confused']
 
-# Define transforms
+# Define transforms with better preprocessing
 transform = transforms.Compose([
     transforms.Resize((48, 48)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485], std=[0.229])
 ])
+
+# Face alignment function
+def align_face(image, face_cascade):
+    gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+    faces = face_cascade.detectMultiScale(gray, 1.1, 5)
+    
+    if len(faces) == 0:
+        return None, None
+    
+    # Get the largest face
+    face = max(faces, key=lambda x: x[2] * x[3])
+    x, y, w, h = face
+    
+    # Extract face ROI
+    face_roi = gray[y:y+h, x:x+w]
+    
+    # Detect eyes for alignment
+    eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+    eyes = eye_cascade.detectMultiScale(face_roi)
+    
+    if len(eyes) >= 2:
+        try:
+            # Get the two largest eyes
+            eyes = sorted(eyes, key=lambda x: x[2] * x[3], reverse=True)[:2]
+            
+            # Calculate eye centers
+            eye_centers = []
+            for (ex, ey, ew, eh) in eyes:
+                eye_center = (float(x + ex + ew//2), float(y + ey + eh//2))
+                eye_centers.append(eye_center)
+            
+            # Calculate angle for alignment
+            left_eye, right_eye = eye_centers
+            angle = np.degrees(np.arctan2(right_eye[1] - left_eye[1],
+                                        right_eye[0] - left_eye[0]))
+            
+            # Calculate center point
+            center_x = (left_eye[0] + right_eye[0]) / 2
+            center_y = (left_eye[1] + right_eye[1]) / 2
+            center = (center_x, center_y)
+            
+            # Rotate image
+            M = cv2.getRotationMatrix2D(center, angle, 1.0)
+            aligned = cv2.warpAffine(gray, M, (gray.shape[1], gray.shape[0]))
+            
+            # Extract aligned face
+            faces = face_cascade.detectMultiScale(aligned, 1.1, 5)
+            if len(faces) > 0:
+                x, y, w, h = max(faces, key=lambda x: x[2] * x[3])
+                face_roi = aligned[y:y+h, x:x+w]
+                return face_roi, (x, y, w, h)
+        except Exception as e:
+            print(f"Warning: Face alignment failed: {str(e)}")
+            # Return unaligned face if alignment fails
+            return face_roi, (x, y, w, h)
+    
+    return face_roi, (x, y, w, h)
 
 class EmotionNet(nn.Module):
     def __init__(self):
@@ -89,24 +147,49 @@ class EmotionDetector:
             raise e
 
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        
+        # Initialize temporal smoothing
+        self.emotion_history = deque(maxlen=5)  # Store last 5 predictions
+        self.confidence_threshold = 0.6  # Minimum confidence threshold
+
+    def smooth_predictions(self, predictions):
+        """Apply temporal smoothing to predictions"""
+        self.emotion_history.append(predictions)
+        
+        if len(self.emotion_history) < 3:
+            return predictions
+            
+        # Count occurrences of each emotion in history
+        emotion_counts = {}
+        for pred in self.emotion_history:
+            for emotion, conf in pred:
+                if emotion not in emotion_counts:
+                    emotion_counts[emotion] = 0
+                emotion_counts[emotion] += 1
+                
+        # Get most frequent emotion
+        most_frequent = max(emotion_counts.items(), key=lambda x: x[1])[0]
+        
+        # Return predictions with most frequent emotion first
+        result = []
+        for emotion, conf in predictions:
+            if emotion == most_frequent:
+                result.insert(0, (emotion, conf))
+            else:
+                result.append((emotion, conf))
+                
+        return result
 
     def detect_emotion(self, image):
         # Convert PIL Image to numpy array if needed
         if isinstance(image, Image.Image):
             image = np.array(image)
         
-        # Convert to grayscale
-        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        # Align face
+        face_roi, face_coords = align_face(image, self.face_cascade)
         
-        # Detect faces
-        faces = self.face_cascade.detectMultiScale(gray, 1.1, 5)
-        
-        if len(faces) == 0:
+        if face_roi is None:
             return "No face detected"
-        
-        # Use the first face detected
-        x, y, w, h = faces[0]
-        face_roi = gray[y:y+h, x:x+w]
         
         # Convert to PIL Image
         face_pil = Image.fromarray(face_roi)
@@ -117,12 +200,29 @@ class EmotionDetector:
         # Get prediction
         with torch.no_grad():
             outputs = self.model(face_tensor)
-            _, predicted = torch.max(outputs.data, 1)
-            emotion = EMOTIONS[predicted.item()]
             probabilities = torch.softmax(outputs, dim=1)
-            confidence = probabilities[0][predicted.item()].item() * 100
-        
-        return f"{emotion} ({confidence:.1f}%)"
+            top3_prob, top3_indices = torch.topk(probabilities, 3)
+            
+            # Convert to list of (emotion, confidence) tuples
+            predictions = []
+            for prob, idx in zip(top3_prob[0], top3_indices[0]):
+                emotion = EMOTIONS[idx.item()]
+                confidence = prob.item()
+                predictions.append((emotion, confidence))
+            
+            # Apply temporal smoothing
+            smoothed_predictions = self.smooth_predictions(predictions)
+            
+            # Filter by confidence threshold
+            result = []
+            for emotion, conf in smoothed_predictions:
+                if conf >= self.confidence_threshold:
+                    result.append(f"{emotion} ({conf*100:.1f}%)")
+            
+            if not result:
+                return "Uncertain"
+                
+            return " | ".join(result)
 
 def detect_emotion():
     # Load the trained model
@@ -137,7 +237,6 @@ def detect_emotion():
         print("Error: Could not load the model. Please train the model first using train_model.py")
         print(f"Error details: {str(e)}")
         return
-    
 
     # Initialize webcam
     cap = cv2.VideoCapture(0)
@@ -147,6 +246,9 @@ def detect_emotion():
 
     # Load face detection classifier
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    
+    # Initialize emotion detector
+    detector = EmotionDetector()
 
     print("Starting emotion detection... Press 'q' to quit")
 
@@ -156,34 +258,16 @@ def detect_emotion():
             print("Error: Could not read frame")
             break
 
-        # Convert frame to grayscale
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-        # Detect faces
-        faces = face_cascade.detectMultiScale(gray, 1.1, 5)
-
-        for (x, y, w, h) in faces:
-            # Extract face ROI
-            face_roi = gray[y:y+h, x:x+w]
-            
-            # Convert to PIL Image
-            face_pil = Image.fromarray(face_roi)
-            
-            # Apply transforms
-            face_tensor = transform(face_pil).unsqueeze(0).to(device)
-            
-            # Get prediction
-            with torch.no_grad():
-                outputs = model(face_tensor)
-                _, predicted = torch.max(outputs.data, 1)
-                emotion = EMOTIONS[predicted.item()]
-                probabilities = torch.softmax(outputs, dim=1)
-                confidence = probabilities[0][predicted.item()].item() * 100
-
-            # Draw rectangle and text
-            cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
-            text = f"{emotion}: {confidence:.2f}%"
-            cv2.putText(frame, text, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
+        # Detect emotion
+        result = detector.detect_emotion(frame)
+        
+        # Draw results
+        if result != "No face detected" and result != "Uncertain":
+            # Get face coordinates
+            face_roi, (x, y, w, h) = align_face(frame, face_cascade)
+            if face_roi is not None:
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+                cv2.putText(frame, result, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 2)
 
         # Display the frame
         cv2.imshow('Emotion Detection', frame)
